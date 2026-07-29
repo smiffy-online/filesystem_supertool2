@@ -45,11 +45,62 @@ additionally need [`uvx`](https://docs.astral.sh/uv/guides/tools/) (bundled
 with `uv`) to fetch Pyright on first use, and Node.js on `PATH` (Pyright's
 own runtime dependency).
 
+`uv` itself installs per-user by default (`~/.local/bin`). For a shared,
+system-wide binary on a multi-user machine instead:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sudo env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+```
+
+Each user's Python interpreter downloads, tool installs (`uvx`), and cache
+still land in their own home directory by default either way -- uv doesn't
+document a supported pattern for sharing those too, so this only solves "one
+`uv` binary for everyone," not "one shared cache/interpreter set."
+
 ```bash
 git clone https://github.com/smiffy-online/filesystem_supertool2.git
 cd filesystem_supertool2
 uv sync
 ```
+
+### Dependency footprint (known tradeoff vs the original)
+
+The original (Node/TypeScript) Filesystem Supertool has **zero** npm
+dependencies -- no `dependencies` block in `package.json` at all. It hand-rolls
+its own stdio/JSON-RPC framing, path validation, and diffing rather than
+depending on the official `@modelcontextprotocol/sdk` or any utility library,
+so `node server.js` runs immediately on any machine with Node installed, no
+package-fetch step, ever.
+
+This rewrite does not match that bar, by deliberate choice (see thread #360):
+it uses the official `mcp` PyPI package for the protocol layer rather than
+hand-rolling JSON-RPC-over-stdio against stdlib, which pulls in its own
+transitive tree (pydantic, starlette, anyio, httpx, jsonschema, uvicorn,
+opentelemetry, etc.). `fs_tools.py` itself has no third-party dependencies
+(the document-parsing libraries for `read_document` are lazily imported, only
+needed if that tool is actually called) -- the footprint is entirely the MCP
+SDK and solidlsp's own requirements (`lsprotocol`, `overrides`, `pathspec`,
+`psutil`, `requests`).
+
+Practical consequences:
+- **~42 resolved packages** (`uv tree --no-dev`), vs 0 for the original.
+- **First run per machine needs network access** to resolve and cache these
+  from PyPI (`uv run` does this automatically; subsequent runs use the cache).
+  The original never needs this at all.
+- Semantic tools add a further, separate fetch on first use: `uvx` pulls the
+  pinned `pyright` PyPI package, which itself fetches its actual (Node-based)
+  language server binary. This is on top of, not instead of, the Python
+  dependency resolution above.
+- Once `uv` is installed system-wide (see below) and the caches are warm, this
+  behaves the same as the original in practice -- the gap is specifically
+  about first-run-per-machine network dependency and package count, not
+  ongoing runtime behaviour.
+
+If a fully hand-rolled, zero-third-party-dependency protocol layer becomes a
+hard requirement later, that would mean dropping the `mcp` package and
+reimplementing JSON-RPC-over-stdio (framing, `initialize` handshake,
+`tools/list`, `tools/call`) directly -- a substantial rewrite of `server.py`,
+not a small change.
 
 ### Allowed directories (required)
 
