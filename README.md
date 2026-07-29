@@ -51,13 +51,22 @@ cd filesystem_supertool2
 uv sync
 ```
 
-Run directly:
+### Allowed directories (required)
+
+Matching the original Filesystem Supertool's security boundary exactly: every
+path-accepting tool (filesystem and semantic alike) is restricted to a
+configured set of allowed root directories -- symlink targets and
+not-yet-existing paths' nearest existing ancestor are checked too, not just
+the literal requested path. The server refuses to start without at least one.
+
+Configure via `ALLOWED_DIRS` (comma-separated, takes priority) or as CLI
+arguments (each may itself be comma-separated):
 
 ```bash
-uv run filesystem-supertool2
+ALLOWED_DIRS=/home/user,/workspaces uv run filesystem-supertool2
+# or
+uv run filesystem-supertool2 /home/user,/workspaces
 ```
-
-This starts the MCP server on STDIO.
 
 ### Claude Desktop
 
@@ -72,7 +81,7 @@ installer, or add an equivalent entry directly to your
   "mcpServers": {
     "filesystem-supertool2": {
       "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/filesystem_supertool2", "filesystem-supertool2"]
+      "args": ["run", "--directory", "/absolute/path/to/filesystem_supertool2", "filesystem-supertool2", "/home/user,/workspaces"]
     }
   }
 }
@@ -80,8 +89,16 @@ installer, or add an equivalent entry directly to your
 
 ### Claude Code
 
-Add via `claude mcp add`, or an equivalent entry in your MCP settings,
-pointing at the same `uv run` command.
+```bash
+claude mcp add filesystem-supertool2 -s user -- uv run --directory /absolute/path/to/filesystem_supertool2 filesystem-supertool2 /home/user,/workspaces
+```
+
+`-s user` makes it available across all projects on this machine (each host
+running its own CC instance needs this run locally, with the `--directory`
+and allowed-directories args adjusted to that host's clone and paths -- there
+is no cross-host config sync). See `claude mcp add --help` for the other
+scope options (`local`, `project`) and flags (`-e` for env vars instead of
+CLI args, etc.).
 
 ## Architecture
 

@@ -34,13 +34,39 @@ DEFAULT_TREE_EXCLUDE = "node_modules,.git,__pycache__,venv,.venv"
 
 
 # --- path validation ----------------------------------------------------------------
+#
+# Mirrors the current (Node/TypeScript) Filesystem Supertool's lib/paths.js
+# validatePath() exactly: absolute-path syntax check, resolve to remove . / ..,
+# confirm the resolved path sits inside one of the configured allowed roots (exact
+# match or subdirectory), and -- separately -- if the path exists, resolve symlinks
+# and re-check the *target* against the allowed roots too (symlink-escape defence);
+# if it doesn't exist yet, the parent directory is checked instead. Order matters:
+# the original checks must_exist before the not-exists/parent-directory branch, so
+# a must_exist=True call on a missing path raises "does not exist" rather than
+# silently validating the parent.
+
+_allowed_directories: list[str] = []
 
 
-def _validate_absolute_path(path: str) -> str:
-    """
-    Rejects relative paths and ~-expansion, matching the current tool's contract:
-    must start with / (Unix) or a drive letter (Windows), no ./ or ../ shorthand.
-    """
+def set_allowed_directories(dirs: list[str]) -> None:
+    """Configures the roots all path-accepting tools are restricted to. Call once at startup."""
+    global _allowed_directories
+    _allowed_directories = [os.path.normpath(os.path.abspath(d)) for d in dirs]
+
+
+def get_allowed_directories() -> list[str]:
+    return list(_allowed_directories)
+
+
+def _is_within_allowed(target: str) -> bool:
+    normalized = os.path.normpath(target)
+    for allowed in _allowed_directories:
+        if normalized == allowed or normalized.startswith(allowed + os.sep):
+            return True
+    return False
+
+
+def _check_absolute_syntax(path: str) -> None:
     if not path:
         raise ValueError("path must not be empty")
     if path.startswith("~"):
@@ -48,7 +74,64 @@ def _validate_absolute_path(path: str) -> str:
     is_windows_abs = len(path) >= 3 and path[1] == ":" and path[2] in "\\/"
     if not (path.startswith("/") or is_windows_abs):
         raise ValueError(f"path must be absolute (start with / or a drive letter): {path!r}")
-    return path
+
+
+def validate_path(path: str, *, must_exist: bool = False, follow_symlinks: bool = True) -> str:
+    """
+    Validates a path against the allowed-directories boundary and returns its
+    resolved (normalized, symlink-followed-if-applicable) absolute form.
+
+    :raises ValueError: empty/relative/~-path, or resolves outside the allowed roots
+    :raises FileNotFoundError: must_exist=True and the path doesn't exist, or (for a
+        not-yet-existing path) no ancestor directory exists at all
+    """
+    _check_absolute_syntax(path)
+    if not _allowed_directories:
+        raise ValueError("no allowed directories configured; the server must be started with at least one allowed root")
+
+    resolved = os.path.normpath(os.path.abspath(path))
+    if not _is_within_allowed(resolved):
+        raise ValueError(f"Access denied: path outside allowed directories\nRequested: {resolved}\nAllowed: {', '.join(_allowed_directories)}")
+
+    exists = os.path.exists(resolved)
+    if must_exist and not exists:
+        raise FileNotFoundError(f"Path does not exist: {resolved}")
+
+    if not exists:
+        # Walk up to the nearest *existing* ancestor rather than requiring the
+        # immediate parent to already exist: the original tool only checks the
+        # immediate parent here, which silently breaks its own advertised
+        # "mkdir -p"-style recursive creation for anything nested more than one
+        # missing level deep (verified by reading its create_directory tool,
+        # which calls mkdir({recursive:true}) right after a check that can't
+        # accommodate recursion). Same security property either way -- nothing
+        # outside the allowed roots is ever touched -- just without that gap.
+        ancestor = os.path.dirname(resolved)
+        while ancestor and not os.path.exists(ancestor):
+            parent_of_ancestor = os.path.dirname(ancestor)
+            if parent_of_ancestor == ancestor:  # reached filesystem root without finding one
+                break
+            ancestor = parent_of_ancestor
+        if not os.path.isdir(ancestor):
+            raise FileNotFoundError(f"No existing ancestor directory found for: {resolved}")
+        ancestor_real = os.path.realpath(ancestor)
+        if not _is_within_allowed(ancestor_real):
+            raise ValueError(
+                f"Access denied: nearest existing ancestor directory resolves outside allowed directories\n"
+                f"Ancestor: {ancestor_real}\nAllowed: {', '.join(_allowed_directories)}"
+            )
+        return resolved
+
+    if follow_symlinks:
+        real = os.path.realpath(resolved)
+        if not _is_within_allowed(real):
+            raise ValueError(
+                f"Access denied: symlink target outside allowed directories\n"
+                f"Symlink: {resolved}\nTarget: {real}\nAllowed: {', '.join(_allowed_directories)}"
+            )
+        return real
+
+    return resolved
 
 
 # --- glob matching (supports **, *, ?, [abc], {a,b,c}) -------------------------------
@@ -173,7 +256,7 @@ def read_file(
     line_numbers: bool = False,
 ) -> str:
     """Reads the complete contents of a file (UTF-8 text, or base64 if binary=true). 10MB limit unless head/tail is used."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     if head is not None and tail is not None:
         raise ValueError("head and tail are mutually exclusive")
     if binary and (head is not None or tail is not None):
@@ -219,7 +302,7 @@ def write_file(
     overwrite: bool = True,
 ) -> dict[str, Any]:
     """Creates a new file or overwrites an existing one with new content."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=False)
     if not overwrite and os.path.exists(path):
         raise FileExistsError(f"path already exists and overwrite=false: {path}")
     if mkdir_parents:
@@ -249,7 +332,7 @@ def edit_file(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Makes a targeted edit by replacing all literal occurrences of old_text with new_text in a file."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     with open(path, encoding="utf-8") as f:
         original = f.read()
 
@@ -285,7 +368,7 @@ def edit_file(
 
 def append_file(path: str, content: str, mkdir_parents: bool = False) -> dict[str, Any]:
     """Appends content to the end of a file, creating it if it doesn't exist. No automatic newline is added."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=False)
     if mkdir_parents:
         os.makedirs(os.path.dirname(path) or "/", exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -298,7 +381,7 @@ def append_file(path: str, content: str, mkdir_parents: bool = False) -> dict[st
 
 def delete_file(path: str, confirm: bool) -> dict[str, Any]:
     """Permanently deletes a file. Requires confirm=true to prevent accidental deletion."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     if confirm is not True:
         raise ValueError("confirm must be true to delete a file")
     os.remove(path)
@@ -310,8 +393,8 @@ def delete_file(path: str, confirm: bool) -> dict[str, Any]:
 
 def copy_file(source: str, destination: str, mkdir_parents: bool = False, overwrite: bool = False) -> dict[str, Any]:
     """Copies a file to a new location. destination must be a full file path, not a directory."""
-    source = _validate_absolute_path(source)
-    destination = _validate_absolute_path(destination)
+    source = validate_path(source, must_exist=True)
+    destination = validate_path(destination, must_exist=False)
     if os.path.isdir(destination):
         raise ValueError(f"destination must be a full file path, not a directory: {destination}")
     if not overwrite and os.path.exists(destination):
@@ -324,8 +407,8 @@ def copy_file(source: str, destination: str, mkdir_parents: bool = False, overwr
 
 def move_file(source: str, destination: str, mkdir_parents: bool = False, overwrite: bool = False) -> dict[str, Any]:
     """Moves or renames a file. destination must be a full file path, not a directory."""
-    source = _validate_absolute_path(source)
-    destination = _validate_absolute_path(destination)
+    source = validate_path(source, must_exist=True)
+    destination = validate_path(destination, must_exist=False)
     if os.path.isdir(destination):
         raise ValueError(f"destination must be a full file path, not a directory: {destination}")
     if not overwrite and os.path.exists(destination):
@@ -343,14 +426,14 @@ def move_file(source: str, destination: str, mkdir_parents: bool = False, overwr
 
 def create_directory(path: str) -> dict[str, Any]:
     """Creates a directory (and any missing parents). Succeeds silently if it already exists."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=False)
     os.makedirs(path, exist_ok=True)
     return {"path": path, "created": True}
 
 
 def delete_directory(path: str, confirm: bool, force: bool = False) -> dict[str, Any]:
     """Removes a directory. Only empty directories unless force=true (recursive delete)."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     if confirm is not True:
         raise ValueError("confirm must be true to delete a directory")
     if force:
@@ -370,7 +453,7 @@ def list_directory(
     count_only: bool = False,
 ) -> dict[str, Any]:
     """Lists the contents of a directory, with optional detail level and hidden-file filtering."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     entries = sorted(os.listdir(path))
     if not hidden:
         entries = [e for e in entries if not e.startswith(".")]
@@ -417,7 +500,7 @@ def find_files(
     count_only: bool = False,
 ) -> dict[str, Any]:
     """Finds files and directories by glob pattern (supports **, *, ?, [abc], {a,b,c})."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     include_patterns = _compile_glob_patterns(pattern)
     exclude_patterns = _compile_glob_patterns(exclude) if exclude else []
     base_depth = path.rstrip("/").count("/")
@@ -502,7 +585,7 @@ def grep(
     regex: bool = False,
 ) -> dict[str, Any]:
     """Searches file contents for matching lines (literal substring by default, or regex). Binary files are skipped."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     flags = 0 if case_sensitive else re.IGNORECASE
     compiled = re.compile(pattern if regex else re.escape(pattern), flags)
 
@@ -544,7 +627,7 @@ def grep(
 
 def stat(path: str) -> dict[str, Any]:
     """Gets detailed metadata about a file or directory: size, timestamps, permissions, type."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     st = os.lstat(path)
     is_link = os.path.islink(path)
     entry_type = "symlink" if is_link else ("directory" if os.path.isdir(path) else "file")
@@ -565,16 +648,22 @@ def stat(path: str) -> dict[str, Any]:
 
 def exists(path: str, type: Literal["file", "directory", "any"] = "any") -> dict[str, Any]:
     """Checks whether a path exists, optionally verifying it is a file or directory."""
-    path = _validate_absolute_path(path)
-    present = os.path.exists(path)
-    if present and type != "any":
-        present = os.path.isfile(path) if type == "file" else os.path.isdir(path)
-    return {"path": path, "exists": present}
+    _check_absolute_syntax(path)
+    try:
+        resolved = validate_path(path, must_exist=True)
+    except FileNotFoundError:
+        # Mirrors the original: "doesn't exist" reports exists=False rather than
+        # erroring; "outside allowed directories" (ValueError) still propagates.
+        return {"path": path, "exists": False}
+    present = True
+    if type != "any":
+        present = os.path.isfile(resolved) if type == "file" else os.path.isdir(resolved)
+    return {"path": resolved, "exists": present}
 
 
 def checksum(path: str, algorithm: Literal["md5", "sha256", "sha512"] = "sha256") -> dict[str, Any]:
     """Generates a hash/checksum of a file's contents, for integrity checks or comparison."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     h = hashlib.new(algorithm)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -584,8 +673,8 @@ def checksum(path: str, algorithm: Literal["md5", "sha256", "sha512"] = "sha256"
 
 def compare_files(file_a: str, file_b: str, context_lines: int = 3) -> dict[str, Any]:
     """Generates a unified diff between two files. Empty diff if files are identical."""
-    file_a = _validate_absolute_path(file_a)
-    file_b = _validate_absolute_path(file_b)
+    file_a = validate_path(file_a, must_exist=True)
+    file_b = validate_path(file_b, must_exist=True)
     with open(file_a, encoding="utf-8") as f:
         a_lines = f.readlines()
     with open(file_b, encoding="utf-8") as f:
@@ -596,7 +685,7 @@ def compare_files(file_a: str, file_b: str, context_lines: int = 3) -> dict[str,
 
 def patch_file(path: str, patch: str, reverse: bool = False, backup: bool = True) -> dict[str, Any]:
     """Applies a unified diff patch to a file (e.g. from edit_file's dry_run or compare_files)."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     if backup:
         shutil.copy2(path, f"{path}.bak")
 
@@ -621,7 +710,7 @@ def patch_file(path: str, patch: str, reverse: bool = False, backup: bool = True
 
 def touch(path: str, mkdir_parents: bool = False) -> dict[str, Any]:
     """Creates an empty file if it doesn't exist, or updates its modification time if it does."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=False)
     if mkdir_parents:
         os.makedirs(os.path.dirname(path) or "/", exist_ok=True)
     existed = os.path.exists(path)
@@ -664,7 +753,7 @@ _tail_follow_state = _TailFollowState()
 
 def tail_follow(path: str, reset: bool = False) -> dict[str, Any]:
     """Returns new content appended to a file since the last call, maintaining a per-path cursor."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     content = _tail_follow_state.read_new_content(path, reset)
     return {"path": path, "content": content}
 
@@ -703,7 +792,7 @@ def tree(
     hidden: bool = False,
 ) -> dict[str, Any]:
     """Gets a recursive tree view of files and directories."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     exclude_names = {e.strip() for e in exclude.split(",") if e.strip()}
     lines = [path]
     lines.extend(_tree_lines(path, max_depth, exclude_names, hidden, "", 0))
@@ -715,7 +804,7 @@ def tree(
 
 def read_lines(path: str, start_line: int, end_line: int, line_numbers: bool = True) -> str:
     """Reads a specific 1-indexed, inclusive range of lines from a file. end_line=-1 reads to end of file."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     if start_line < 1:
         raise ValueError("start_line is 1-indexed and must be >= 1")
     with open(path, encoding="utf-8") as f:
@@ -790,7 +879,7 @@ _DOCUMENT_READERS = {
 
 def read_document(path: str) -> str:
     """Extracts text content from a PDF, XLSX, XLS, or DOCX file for LLM consumption."""
-    path = _validate_absolute_path(path)
+    path = validate_path(path, must_exist=True)
     ext = os.path.splitext(path)[1].lower()
     reader = _DOCUMENT_READERS.get(ext)
     if reader is None:

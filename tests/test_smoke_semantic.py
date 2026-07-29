@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from filesystem_supertool2 import semantic_tools
+from filesystem_supertool2 import fs_tools, semantic_tools
 
 pytestmark = pytest.mark.integration
 
@@ -41,8 +41,10 @@ if __name__ == "__main__":
 def sample_project(tmp_path):
     (tmp_path / "main.py").write_text(SAMPLE_SOURCE)
     root = str(tmp_path)
+    fs_tools.set_allowed_directories([root])
     yield root
     semantic_tools.shutdown_all_servers()
+    fs_tools.set_allowed_directories([])
 
 
 def test_find_symbol_workspace_wide(sample_project):
@@ -82,24 +84,18 @@ def test_replace_symbol_body_round_trips(sample_project):
     )
     assert result["name_path"] == "main"
 
-    from filesystem_supertool2 import fs_tools
-
     content = fs_tools.read_file(f"{sample_project}/main.py")
     assert 'print("replaced")' in content
     assert "Greeter" in content  # rest of the file must survive the edit
 
 
 def test_insert_before_symbol_round_trips(sample_project):
-    from filesystem_supertool2 import fs_tools
-
     semantic_tools.insert_before_symbol(sample_project, "main", "main.py", "# marker-before\n")
     content = fs_tools.read_file(f"{sample_project}/main.py")
     assert "# marker-before\ndef main() -> None:" in content
 
 
 def test_insert_after_symbol_round_trips(sample_project):
-    from filesystem_supertool2 import fs_tools
-
     semantic_tools.insert_after_symbol(sample_project, "Greeter", "main.py", "# marker-after\n")
     content = fs_tools.read_file(f"{sample_project}/main.py")
     assert "# marker-after" in content

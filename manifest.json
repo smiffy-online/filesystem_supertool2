@@ -15,12 +15,22 @@
   "homepage": "https://github.com/smiffy-online/filesystem_supertool2",
   "license": "MIT",
   "keywords": ["filesystem", "mcp", "lsp", "code-intelligence", "pyright"],
+  "user_config": {
+    "allowed_directories": {
+      "type": "directory",
+      "title": "Allowed Directories",
+      "description": "Directories this server is allowed to read from and write to. Required -- the server refuses to start without at least one.",
+      "multiple": true,
+      "required": true,
+      "default": ["${HOME}"]
+    }
+  },
   "server": {
     "type": "uv",
     "entry_point": "src/filesystem_supertool2/server.py",
     "mcp_config": {
       "command": "uv",
-      "args": ["run", "--directory", "${__dirname}", "filesystem-supertool2"]
+      "args": ["run", "--directory", "${__dirname}", "filesystem-supertool2", "${user_config.allowed_directories}"]
     }
   },
   "compatibility": {

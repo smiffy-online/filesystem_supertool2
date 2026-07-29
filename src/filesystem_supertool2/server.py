@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import atexit
+import os
+import sys
 
 from mcp.server.mcpserver import MCPServer
 
@@ -61,7 +63,38 @@ def build_server() -> MCPServer:
     return mcp
 
 
+def _parse_allowed_dirs(env_value: str | None, cli_args: list[str]) -> list[str]:
+    """
+    Matches the original (Node/TypeScript) Filesystem Supertool's interface exactly:
+    ``ALLOWED_DIRS`` env var (comma-separated) takes priority if set and non-empty,
+    otherwise directories are taken from CLI args (each arg may itself be
+    comma-separated, e.g. a single ``/home/user,/workspaces`` argument).
+    """
+    if env_value:
+        dirs = [d.strip() for d in env_value.split(",") if d.strip()]
+        if dirs:
+            return dirs
+
+    dirs = []
+    for arg in cli_args:
+        if arg.startswith("-"):
+            continue
+        if "," in arg:
+            dirs.extend(d.strip() for d in arg.split(",") if d.strip())
+        else:
+            dirs.append(arg)
+    return dirs
+
+
 def main() -> None:
+    allowed_dirs = _parse_allowed_dirs(os.environ.get("ALLOWED_DIRS"), sys.argv[1:])
+    if not allowed_dirs:
+        print("Error: No allowed directories specified", file=sys.stderr)
+        print("Set ALLOWED_DIRS environment variable or pass directories as arguments", file=sys.stderr)
+        print("Example: ALLOWED_DIRS=/home/user,/workspaces uv run filesystem-supertool2", file=sys.stderr)
+        sys.exit(1)
+    fs_tools.set_allowed_directories(allowed_dirs)
+
     atexit.register(semantic_tools.shutdown_all_servers)
     mcp = build_server()
     mcp.run(transport="stdio")

@@ -14,6 +14,7 @@ import os
 import threading
 from typing import Any
 
+from filesystem_supertool2 import fs_tools
 from filesystem_supertool2.solidlsp.ls import SolidLanguageServer
 from filesystem_supertool2.solidlsp.ls_config import (
     LanguageServerConfig,
@@ -22,6 +23,23 @@ from filesystem_supertool2.solidlsp.ls_config import (
 
 _servers: dict[str, SolidLanguageServer] = {}
 _servers_lock = threading.Lock()
+
+
+def _validate_in_project(project_root: str, relative_path: str | None = None) -> str:
+    """
+    Enforces the same allowed-directories boundary as fs_tools on both the project
+    root and (if given) the file it's being asked to operate on -- semantic tools
+    touch the filesystem just as much as fs_tools does and must be bound by the
+    same restriction, not exempt from it.
+
+    :return: the validated, absolute project root
+    """
+    validated_root = fs_tools.validate_path(project_root, must_exist=True)
+    if not os.path.isdir(validated_root):
+        raise ValueError(f"project_root is not a directory: {validated_root}")
+    if relative_path is not None:
+        fs_tools.validate_path(os.path.join(validated_root, relative_path), must_exist=True)
+    return validated_root
 
 
 def _get_server(project_root: str) -> SolidLanguageServer:
@@ -113,6 +131,7 @@ def find_symbol(project_root: str, name_path: str, relative_path: str | None = N
     tree for an exact name-path match. Otherwise, performs a workspace-wide search
     (LSP ``workspace/symbol`` -- substring/fuzzy matching, per the language server).
     """
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     parts = [p for p in name_path.split("/") if p]
     if not parts:
@@ -129,6 +148,7 @@ def find_symbol(project_root: str, name_path: str, relative_path: str | None = N
 
 def request_definition(project_root: str, relative_path: str, line: int, column: int) -> list[dict[str, Any]]:
     """Finds the definition location(s) of the symbol at the given 0-indexed line/column."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     locations = srv.request_definition(relative_path, line, column)
     return [_location_to_dict(loc) for loc in locations]
@@ -136,6 +156,7 @@ def request_definition(project_root: str, relative_path: str, line: int, column:
 
 def request_references(project_root: str, relative_path: str, line: int, column: int) -> list[dict[str, Any]]:
     """Finds all reference locations of the symbol at the given 0-indexed line/column."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     locations = srv.request_references(relative_path, line, column)
     return [_location_to_dict(loc) for loc in locations]
@@ -143,6 +164,7 @@ def request_references(project_root: str, relative_path: str, line: int, column:
 
 def request_document_overview(project_root: str, relative_path: str) -> list[dict[str, Any]]:
     """Lists the top-level symbols (classes, functions, etc.) defined in a file."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     symbols = srv.request_document_overview(relative_path)
     return [_symbol_to_dict(s) for s in symbols]
@@ -150,6 +172,7 @@ def request_document_overview(project_root: str, relative_path: str) -> list[dic
 
 def request_diagnostics(project_root: str, relative_path: str) -> list[dict[str, Any]]:
     """Retrieves diagnostics (errors, warnings, etc.) the language server has for a file."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     diagnostics = srv.request_text_document_diagnostics(relative_path)
     return [dict(d) for d in diagnostics]
@@ -187,6 +210,7 @@ def request_rename(project_root: str, relative_path: str, line: int, column: int
     """
     from filesystem_supertool2.solidlsp.ls_utils import FileUtils
 
+    validated_root = _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     edit = srv.request_rename_symbol_edit(relative_path, line, column, new_name)
     if edit is None:
@@ -195,7 +219,11 @@ def request_rename(project_root: str, relative_path: str, line: int, column: int
     changed_files: list[str] = []
     for uri, edits in (edit.get("changes") or {}).items():
         abs_path = FileUtils.uri_to_path(uri)
-        rel = os.path.relpath(abs_path, os.path.abspath(project_root))
+        rel = os.path.relpath(abs_path, validated_root)
+        # The rename may touch files elsewhere in the project (or, in principle, anywhere
+        # the language server can see) -- validate each one individually before writing,
+        # rather than trusting the LSP response to have stayed within the allowed roots.
+        fs_tools.validate_path(os.path.join(validated_root, rel), must_exist=True)
         with srv.open_file(rel):
             srv.apply_text_edits_to_file(rel, edits)
             _persist_buffer_to_disk(srv, project_root, rel)
@@ -206,6 +234,7 @@ def request_rename(project_root: str, relative_path: str, line: int, column: int
 
 def replace_symbol_body(project_root: str, name_path: str, relative_path: str, new_body: str) -> dict[str, Any]:
     """Replaces the full body (definition through end) of the named symbol with ``new_body``."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     symbol = _resolve_symbol(srv, name_path, relative_path)
     rng = symbol["range"]
@@ -217,6 +246,7 @@ def replace_symbol_body(project_root: str, name_path: str, relative_path: str, n
 
 def insert_before_symbol(project_root: str, name_path: str, relative_path: str, text: str) -> dict[str, Any]:
     """Inserts ``text`` immediately before the named symbol (at the start of its start line)."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     symbol = _resolve_symbol(srv, name_path, relative_path)
     start = symbol["range"]["start"]
@@ -228,6 +258,7 @@ def insert_before_symbol(project_root: str, name_path: str, relative_path: str, 
 
 def insert_after_symbol(project_root: str, name_path: str, relative_path: str, text: str) -> dict[str, Any]:
     """Inserts ``text`` immediately after the named symbol (at the start of the line following its end)."""
+    _validate_in_project(project_root, relative_path)
     srv = _get_server(project_root)
     symbol = _resolve_symbol(srv, name_path, relative_path)
     end = symbol["range"]["end"]

@@ -9,14 +9,66 @@ from filesystem_supertool2 import fs_tools
 
 @pytest.fixture
 def workdir(tmp_path):
-    return str(tmp_path)
+    fs_tools.set_allowed_directories([str(tmp_path)])
+    yield str(tmp_path)
+    fs_tools.set_allowed_directories([])
 
 
-def test_validate_absolute_path_rejects_relative():
+def test_validate_path_rejects_relative(workdir):
     with pytest.raises(ValueError):
-        fs_tools._validate_absolute_path("relative/path.txt")
+        fs_tools.validate_path("relative/path.txt")
     with pytest.raises(ValueError):
-        fs_tools._validate_absolute_path("~/file.txt")
+        fs_tools.validate_path("~/file.txt")
+
+
+def test_validate_path_rejects_outside_allowed_directories(workdir):
+    with pytest.raises(ValueError, match="Access denied"):
+        fs_tools.validate_path("/etc/passwd", must_exist=False)
+
+
+def test_validate_path_allows_subdirectory(workdir):
+    sub = os.path.join(workdir, "a", "b")
+    os.makedirs(sub)
+    # should not raise
+    fs_tools.validate_path(sub, must_exist=True)
+
+
+def test_validate_path_no_allowed_directories_configured():
+    fs_tools.set_allowed_directories([])
+    with pytest.raises(ValueError, match="no allowed directories"):
+        fs_tools.validate_path("/tmp/whatever", must_exist=False)
+
+
+def test_validate_path_must_exist_false_allows_deep_missing_path(workdir):
+    # Walks up to the nearest *existing* ancestor (workdir itself here), not just
+    # the immediate parent -- so deep not-yet-created paths validate fine, matching
+    # write_file/create_directory's mkdir_parents="create all missing levels" contract.
+    deep = os.path.join(workdir, "a", "b", "c", "file.txt")
+    resolved = fs_tools.validate_path(deep, must_exist=False)
+    assert resolved == os.path.normpath(deep)
+
+
+def test_validate_path_must_exist_false_rejects_symlinked_ancestor_escape(workdir, tmp_path_factory):
+    # The requested path's literal string is inside the allowed root, but an ancestor
+    # directory component is itself a symlink pointing outside it -- must still be
+    # rejected once that ancestor is resolved, not just checked textually.
+    outside = str(tmp_path_factory.mktemp("outside"))
+    linked_dir = os.path.join(workdir, "linked")
+    os.symlink(outside, linked_dir)
+    not_yet_existing = os.path.join(linked_dir, "new_subdir", "file.txt")
+    with pytest.raises(ValueError, match="Access denied"):
+        fs_tools.validate_path(not_yet_existing, must_exist=False)
+
+
+def test_validate_path_symlink_escape_rejected(workdir, tmp_path_factory):
+    outside = str(tmp_path_factory.mktemp("outside"))
+    target = os.path.join(outside, "secret.txt")
+    with open(target, "w") as f:
+        f.write("secret")
+    link = os.path.join(workdir, "escape_link")
+    os.symlink(target, link)
+    with pytest.raises(ValueError, match="symlink target outside"):
+        fs_tools.validate_path(link, must_exist=True)
 
 
 def test_write_read_roundtrip(workdir):
