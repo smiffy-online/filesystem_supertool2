@@ -884,7 +884,15 @@ class LanguageServerId(str, Enum):
         :raises ValueError: If the language server class is not supported
         """
         for enum_instance in cls:
-            if enum_instance.get_ls_class() == ls_class:
+            try:
+                ls_class_for_id = enum_instance.get_ls_class()
+            except ModuleNotFoundError:
+                # This build only vendors a subset of language_servers/ (see NOTICE.md) --
+                # skip enum members whose implementation module was intentionally not
+                # extracted, rather than failing to identify *any* class just because
+                # unrelated languages aren't available.
+                continue
+            if ls_class_for_id == ls_class:
                 return enum_instance
         raise ValueError(f"Unhandled language server class: {ls_class}")
 

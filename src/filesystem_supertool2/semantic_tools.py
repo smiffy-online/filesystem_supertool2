@@ -155,6 +155,31 @@ def request_diagnostics(project_root: str, relative_path: str) -> list[dict[str,
     return [dict(d) for d in diagnostics]
 
 
+def _persist_buffer_to_disk(srv: SolidLanguageServer, project_root: str, relative_path: str) -> None:
+    """
+    solidlsp's edit APIs (``apply_text_edits_to_file``, ``insert_text_at_position``, ...) only
+    mutate the in-memory LSP file buffer and notify the language server via ``didChange`` --
+    by design, persisting the change to disk is left to the caller (its own docstring on
+    ``LSPFileBuffer.contents.setter`` says so explicitly). Must be called while the buffer for
+    ``relative_path`` is still open (ref-counted), i.e. from inside a ``with srv.open_file(...)``
+    block, so ``fb.contents`` reflects the edit just made rather than a freshly re-read file.
+    """
+    uri = srv._resolve_file_uri(relative_path)  # no public equivalent exists on SolidLanguageServer
+    fb = srv.open_file_buffers[uri]
+    # Capture contents *before* opening the destination for writing: opening in "w" mode
+    # truncates the file immediately, which bumps its mtime -- and fb.contents' own
+    # staleness check treats a newer on-disk mtime as "changed externally" and re-reads
+    # from disk, which by then is the (already-truncated, empty) file, silently discarding
+    # the in-memory edit. Evaluating fb.contents strictly before the truncation avoids this.
+    new_contents = fb.contents
+    abs_path = os.path.join(os.path.abspath(project_root), relative_path)
+    with open(abs_path, "w", encoding=fb.encoding) as f:
+        f.write(new_contents)
+    # Keep the buffer's cached mtime in sync with what we just wrote, so the next .contents
+    # access on this same buffer doesn't see our own write as an "external modification".
+    fb._read_file_modified_date = fb.abs_path.stat().st_mtime
+
+
 def request_rename(project_root: str, relative_path: str, line: int, column: int, new_name: str) -> dict[str, Any]:
     """
     Renames the symbol at the given 0-indexed line/column to ``new_name`` across the
@@ -171,7 +196,9 @@ def request_rename(project_root: str, relative_path: str, line: int, column: int
     for uri, edits in (edit.get("changes") or {}).items():
         abs_path = FileUtils.uri_to_path(uri)
         rel = os.path.relpath(abs_path, os.path.abspath(project_root))
-        srv.apply_text_edits_to_file(rel, edits)
+        with srv.open_file(rel):
+            srv.apply_text_edits_to_file(rel, edits)
+            _persist_buffer_to_disk(srv, project_root, rel)
         changed_files.append(rel)
 
     return {"new_name": new_name, "changed_files": changed_files}
@@ -182,7 +209,9 @@ def replace_symbol_body(project_root: str, name_path: str, relative_path: str, n
     srv = _get_server(project_root)
     symbol = _resolve_symbol(srv, name_path, relative_path)
     rng = symbol["range"]
-    srv.apply_text_edits_to_file(relative_path, [{"range": rng, "newText": new_body}])
+    with srv.open_file(relative_path):
+        srv.apply_text_edits_to_file(relative_path, [{"range": rng, "newText": new_body}])
+        _persist_buffer_to_disk(srv, project_root, relative_path)
     return {"relative_path": relative_path, "name_path": name_path, "range": rng}
 
 
@@ -191,7 +220,9 @@ def insert_before_symbol(project_root: str, name_path: str, relative_path: str, 
     srv = _get_server(project_root)
     symbol = _resolve_symbol(srv, name_path, relative_path)
     start = symbol["range"]["start"]
-    srv.insert_text_at_position(relative_path, start["line"], 0, text)
+    with srv.open_file(relative_path):
+        srv.insert_text_at_position(relative_path, start["line"], 0, text)
+        _persist_buffer_to_disk(srv, project_root, relative_path)
     return {"relative_path": relative_path, "name_path": name_path, "inserted_at_line": start["line"]}
 
 
@@ -203,5 +234,7 @@ def insert_after_symbol(project_root: str, name_path: str, relative_path: str, t
     # end.character > 0 means the range ends mid-line, so "after" starts on the next line;
     # end.character == 0 already denotes the start of the following line (LSP convention).
     insert_line = end["line"] + 1 if end["character"] > 0 else end["line"]
-    srv.insert_text_at_position(relative_path, insert_line, 0, text)
+    with srv.open_file(relative_path):
+        srv.insert_text_at_position(relative_path, insert_line, 0, text)
+        _persist_buffer_to_disk(srv, project_root, relative_path)
     return {"relative_path": relative_path, "name_path": name_path, "inserted_at_line": insert_line}

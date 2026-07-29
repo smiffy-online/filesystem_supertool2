@@ -35,6 +35,12 @@ dev = [
     "ruff>=0.6.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: needs network access + uv/uvx on PATH; spawns a real language server process (excluded by default)",
+]
+addopts = "-m 'not integration'"
+
 [tool.ruff]
 # solidlsp/ is vendored (extracted from oraios/serena, see NOTICE.md), not our code --
 # excluded so we don't force unrelated style reformatting onto adopted upstream source.
