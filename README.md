@@ -61,7 +61,11 @@ This starts the MCP server on STDIO.
 
 ### Claude Desktop
 
-Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
+This repo ships an [MCPB](https://github.com/anthropics/mcpb) manifest
+(`manifest.json`, schema version 0.4, validated against the official `mcpb`
+CLI). Either package it as a `.mcpb` bundle for Claude Desktop's extension
+installer, or add an equivalent entry directly to your
+`claude_desktop_config.json`:
 
 ```json
 {

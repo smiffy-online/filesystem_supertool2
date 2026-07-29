@@ -1,0 +1,32 @@
+{
+  "manifest_version": "0.4",
+  "name": "filesystem-supertool2",
+  "display_name": "Filesystem Supertool v2",
+  "version": "0.1.0",
+  "description": "Filesystem operations plus LSP-powered semantic code tools, over STDIO.",
+  "long_description": "A Python rewrite of the Filesystem Supertool, adding a second capability layer: semantic code tools (find symbol, references, definitions, rename, diagnostics, symbol-body editing) powered by a real language server (currently Python via Pyright), on top of the original filesystem operation set.",
+  "author": {
+    "name": "Smiffy"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smiffy-online/filesystem_supertool2"
+  },
+  "homepage": "https://github.com/smiffy-online/filesystem_supertool2",
+  "license": "MIT",
+  "keywords": ["filesystem", "mcp", "lsp", "code-intelligence", "pyright"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/filesystem_supertool2/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "filesystem-supertool2"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.13"
+    }
+  }
+}
