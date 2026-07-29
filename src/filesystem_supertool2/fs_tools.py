@@ -172,6 +172,7 @@ def read_file(
     tail: int | None = None,
     line_numbers: bool = False,
 ) -> str:
+    """Reads the complete contents of a file (UTF-8 text, or base64 if binary=true). 10MB limit unless head/tail is used."""
     path = _validate_absolute_path(path)
     if head is not None and tail is not None:
         raise ValueError("head and tail are mutually exclusive")
@@ -217,6 +218,7 @@ def write_file(
     mkdir_parents: bool = False,
     overwrite: bool = True,
 ) -> dict[str, Any]:
+    """Creates a new file or overwrites an existing one with new content."""
     path = _validate_absolute_path(path)
     if not overwrite and os.path.exists(path):
         raise FileExistsError(f"path already exists and overwrite=false: {path}")
@@ -246,6 +248,7 @@ def edit_file(
     backup: bool = True,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    """Makes a targeted edit by replacing all literal occurrences of old_text with new_text in a file."""
     path = _validate_absolute_path(path)
     with open(path, encoding="utf-8") as f:
         original = f.read()
@@ -281,6 +284,7 @@ def edit_file(
 
 
 def append_file(path: str, content: str, mkdir_parents: bool = False) -> dict[str, Any]:
+    """Appends content to the end of a file, creating it if it doesn't exist. No automatic newline is added."""
     path = _validate_absolute_path(path)
     if mkdir_parents:
         os.makedirs(os.path.dirname(path) or "/", exist_ok=True)
@@ -293,6 +297,7 @@ def append_file(path: str, content: str, mkdir_parents: bool = False) -> dict[st
 
 
 def delete_file(path: str, confirm: bool) -> dict[str, Any]:
+    """Permanently deletes a file. Requires confirm=true to prevent accidental deletion."""
     path = _validate_absolute_path(path)
     if confirm is not True:
         raise ValueError("confirm must be true to delete a file")
@@ -304,6 +309,7 @@ def delete_file(path: str, confirm: bool) -> dict[str, Any]:
 
 
 def copy_file(source: str, destination: str, mkdir_parents: bool = False, overwrite: bool = False) -> dict[str, Any]:
+    """Copies a file to a new location. destination must be a full file path, not a directory."""
     source = _validate_absolute_path(source)
     destination = _validate_absolute_path(destination)
     if os.path.isdir(destination):
@@ -317,6 +323,7 @@ def copy_file(source: str, destination: str, mkdir_parents: bool = False, overwr
 
 
 def move_file(source: str, destination: str, mkdir_parents: bool = False, overwrite: bool = False) -> dict[str, Any]:
+    """Moves or renames a file. destination must be a full file path, not a directory."""
     source = _validate_absolute_path(source)
     destination = _validate_absolute_path(destination)
     if os.path.isdir(destination):
@@ -335,12 +342,14 @@ def move_file(source: str, destination: str, mkdir_parents: bool = False, overwr
 
 
 def create_directory(path: str) -> dict[str, Any]:
+    """Creates a directory (and any missing parents). Succeeds silently if it already exists."""
     path = _validate_absolute_path(path)
     os.makedirs(path, exist_ok=True)
     return {"path": path, "created": True}
 
 
 def delete_directory(path: str, confirm: bool, force: bool = False) -> dict[str, Any]:
+    """Removes a directory. Only empty directories unless force=true (recursive delete)."""
     path = _validate_absolute_path(path)
     if confirm is not True:
         raise ValueError("confirm must be true to delete a directory")
@@ -360,6 +369,7 @@ def list_directory(
     hidden: bool = True,
     count_only: bool = False,
 ) -> dict[str, Any]:
+    """Lists the contents of a directory, with optional detail level and hidden-file filtering."""
     path = _validate_absolute_path(path)
     entries = sorted(os.listdir(path))
     if not hidden:
@@ -406,6 +416,7 @@ def find_files(
     max_results: int = 200,
     count_only: bool = False,
 ) -> dict[str, Any]:
+    """Finds files and directories by glob pattern (supports **, *, ?, [abc], {a,b,c})."""
     path = _validate_absolute_path(path)
     include_patterns = _compile_glob_patterns(pattern)
     exclude_patterns = _compile_glob_patterns(exclude) if exclude else []
@@ -490,6 +501,7 @@ def grep(
     max_results: int = 100,
     regex: bool = False,
 ) -> dict[str, Any]:
+    """Searches file contents for matching lines (literal substring by default, or regex). Binary files are skipped."""
     path = _validate_absolute_path(path)
     flags = 0 if case_sensitive else re.IGNORECASE
     compiled = re.compile(pattern if regex else re.escape(pattern), flags)
@@ -531,6 +543,7 @@ def grep(
 
 
 def stat(path: str) -> dict[str, Any]:
+    """Gets detailed metadata about a file or directory: size, timestamps, permissions, type."""
     path = _validate_absolute_path(path)
     st = os.lstat(path)
     is_link = os.path.islink(path)
@@ -551,6 +564,7 @@ def stat(path: str) -> dict[str, Any]:
 
 
 def exists(path: str, type: Literal["file", "directory", "any"] = "any") -> dict[str, Any]:
+    """Checks whether a path exists, optionally verifying it is a file or directory."""
     path = _validate_absolute_path(path)
     present = os.path.exists(path)
     if present and type != "any":
@@ -559,6 +573,7 @@ def exists(path: str, type: Literal["file", "directory", "any"] = "any") -> dict
 
 
 def checksum(path: str, algorithm: Literal["md5", "sha256", "sha512"] = "sha256") -> dict[str, Any]:
+    """Generates a hash/checksum of a file's contents, for integrity checks or comparison."""
     path = _validate_absolute_path(path)
     h = hashlib.new(algorithm)
     with open(path, "rb") as f:
@@ -568,6 +583,7 @@ def checksum(path: str, algorithm: Literal["md5", "sha256", "sha512"] = "sha256"
 
 
 def compare_files(file_a: str, file_b: str, context_lines: int = 3) -> dict[str, Any]:
+    """Generates a unified diff between two files. Empty diff if files are identical."""
     file_a = _validate_absolute_path(file_a)
     file_b = _validate_absolute_path(file_b)
     with open(file_a, encoding="utf-8") as f:
@@ -579,6 +595,7 @@ def compare_files(file_a: str, file_b: str, context_lines: int = 3) -> dict[str,
 
 
 def patch_file(path: str, patch: str, reverse: bool = False, backup: bool = True) -> dict[str, Any]:
+    """Applies a unified diff patch to a file (e.g. from edit_file's dry_run or compare_files)."""
     path = _validate_absolute_path(path)
     if backup:
         shutil.copy2(path, f"{path}.bak")
@@ -603,6 +620,7 @@ def patch_file(path: str, patch: str, reverse: bool = False, backup: bool = True
 
 
 def touch(path: str, mkdir_parents: bool = False) -> dict[str, Any]:
+    """Creates an empty file if it doesn't exist, or updates its modification time if it does."""
     path = _validate_absolute_path(path)
     if mkdir_parents:
         os.makedirs(os.path.dirname(path) or "/", exist_ok=True)
@@ -645,6 +663,7 @@ _tail_follow_state = _TailFollowState()
 
 
 def tail_follow(path: str, reset: bool = False) -> dict[str, Any]:
+    """Returns new content appended to a file since the last call, maintaining a per-path cursor."""
     path = _validate_absolute_path(path)
     content = _tail_follow_state.read_new_content(path, reset)
     return {"path": path, "content": content}
@@ -683,6 +702,7 @@ def tree(
     exclude: str = DEFAULT_TREE_EXCLUDE,
     hidden: bool = False,
 ) -> dict[str, Any]:
+    """Gets a recursive tree view of files and directories."""
     path = _validate_absolute_path(path)
     exclude_names = {e.strip() for e in exclude.split(",") if e.strip()}
     lines = [path]
@@ -694,6 +714,7 @@ def tree(
 
 
 def read_lines(path: str, start_line: int, end_line: int, line_numbers: bool = True) -> str:
+    """Reads a specific 1-indexed, inclusive range of lines from a file. end_line=-1 reads to end of file."""
     path = _validate_absolute_path(path)
     if start_line < 1:
         raise ValueError("start_line is 1-indexed and must be >= 1")
@@ -768,6 +789,7 @@ _DOCUMENT_READERS = {
 
 
 def read_document(path: str) -> str:
+    """Extracts text content from a PDF, XLSX, XLS, or DOCX file for LLM consumption."""
     path = _validate_absolute_path(path)
     ext = os.path.splitext(path)[1].lower()
     reader = _DOCUMENT_READERS.get(ext)
@@ -780,6 +802,7 @@ def read_document(path: str) -> str:
 
 
 def get_hostname() -> dict[str, str]:
+    """Returns the short hostname of the machine running this server, with any DNS domain stripped."""
     fqdn = socket.getfqdn()
     short = fqdn.split(".")[0] if fqdn else socket.gethostname().split(".")[0]
     return {"hostname": short, "fqdn": fqdn}
